@@ -1,0 +1,796 @@
+{
+  "name": "Gmail Support Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "INBOX"
+          ],
+          "q": "-from:me -category:promotions -category:social -category:forums -category:updates",
+          "readStatus": "unread"
+        },
+        "options": {}
+      },
+      "id": "eea92f54-07b8-4ad3-8fbe-dd3d69222bf4",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "oWDtSgMFtN8r9CHf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1s2iSKENay0XrvxpFsRpSgehGNRO_xEVGKHi6dmHogx8"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "FAQs"
+        },
+        "options": {}
+      },
+      "id": "22774c5d-047c-4b68-a83d-80001ac71c9a",
+      "name": "Get FAQs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        230,
+        300
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Nt0QGFAe5D9ZXv6B",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const faqs = $input.all().map(function (i) { return i.json; }).filter(function (f) { return f.question && f.answer; });\nconst emails = $('Gmail Trigger').all();\nconst out = [];\nfor (let idx = 0; idx < emails.length; idx++) {\n  const j = emails[idx].json;\n  const fromObj = (j.from && j.from.value && j.from.value[0]) || {};\n  const email = String(fromObj.address || '').trim().toLowerCase();\n  let name = String(fromObj.name || '').replace(/\"/g, '').trim();\n  if (!name || name.indexOf('@') !== -1) name = 'there';\n  const subject = j.subject || '(no subject)';\n  let body = String(j.text || j.snippet || '');\n  body = body.split(/\\r?\\nOn .{5,200} wrote:/)[0].split(/\\r?\\n>/)[0].trim().slice(0, 2000);\n  const automated = !email || /(no-?reply|donotreply|mailer-daemon|postmaster|notifications?@|newsletter|bounce)/i.test(email) || /^\\[Support Escalation/i.test(subject);\n  out.push({\n    json: {\n      customer_email: email,\n      customer_name: name,\n      subject: subject,\n      message_text: (subject + '\\n' + body).trim(),\n      message_id: j.id,\n      thread_id: j.threadId,\n      received_at: new Date().toISOString(),\n      ticket_id: 'TKT-' + (Date.now() + idx).toString(36).toUpperCase(),\n      is_automated: automated,\n      faqs: faqs\n    },\n    pairedItem: { item: 0 }\n  });\n}\nreturn out;"
+      },
+      "id": "23239182-922e-4092-bbf2-86840df101a9",
+      "name": "Extract Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.is_automated }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4341d484-032a-4093-b8cc-02f07ff75a66",
+      "name": "Ignore (Automated)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const msg = $json;\nconst text = String(msg.message_text || '').toLowerCase();\nconst faqs = msg.faqs || [];\nlet best = null;\nlet bestScore = 0;\nfor (const f of faqs) {\n  const kws = String(f.keywords || '').toLowerCase().split(',').map(function (s) { return s.trim(); }).filter(Boolean);\n  let score = 0;\n  for (const k of kws) {\n    const safe = k.replace(/[.*+?^$(){}|[\\]\\\\]/g, '\\\\$&');\n    if (new RegExp('\\\\b' + safe + '\\\\b').test(text)) score++;\n  }\n  if (score > bestScore) { bestScore = score; best = f; }\n}\nconst context = faqs.map(function (f) { return 'Q: ' + f.question + '\\nA: ' + f.answer; }).join('\\n\\n');\nconst out = Object.assign({}, msg, { answered: bestScore > 0, answer: best ? String(best.answer) : '', faq_context: context });\ndelete out.faqs;\nreturn { json: out };"
+      },
+      "id": "0ff259ca-f3a0-4563-b9e2-c64e79702ca0",
+      "name": "FAQ Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const m = $json;\nconst sys = 'You are the assistant for a company customer-support inbox. This inbox also receives personal mail, so many emails are NOT support requests. ' +\n  'Step 1: decide if the email is a customer asking this company for help or information about its product or service ' +\n  '(account, login, password, plans, pricing, billing, refunds, installation, support hours, complaints, cancellation, security problems, talking to a human). ' +\n  'Newsletters, promotions, offers, internships, university or course announcements, job emails, social updates and personal conversations are NOT support. ' +\n  'Step 2: if it is support, answer ONLY from the FAQ below. If the FAQ does not clearly answer it, the answer must be exactly NO_ANSWER. ' +\n  'Never invent account, billing, security, pricing or technical information. Keep answers under 120 words, friendly, plain text, no greeting or sign-off, same language as the customer. ' +\n  'Return ONLY a JSON object, no markdown: {\"is_support\": true or false, \"answer\": \"answer text or NO_ANSWER\"}.\\n\\nFAQ:\\n' +\n  (m.faq_context || '(empty)');\nreturn { json: Object.assign({}, m, { ai_system: sys, ai_prompt: 'Customer email:\\n' + m.message_text }) };"
+      },
+      "id": "0eb102db-5009-46cb-bee4-6176c655113e",
+      "name": "Build AI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1150,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "models/gemini-2.5-flash",
+          "cachedResultName": "Gemini 2.5 Flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.ai_prompt }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "systemMessage": "={{ $json.ai_system }}",
+          "maxOutputTokens": 800,
+          "temperature": 0.2,
+          "thinkingBudget": 0
+        }
+      },
+      "id": "f4ff1a4c-14be-49b1-9085-e6733fe29c9e",
+      "name": "Gemini AI",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1380,
+        400
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "let src;\ntry { src = $('Build AI Request').item.json; } catch (e) { src = $('Build AI Request').all()[$itemIndex].json; }\nconst j = $json || {};\nfunction partsText(parts) { return (parts || []).map(function (p) { return (p && p.text) || ''; }).join(''); }\nlet t = '';\nif (j.content && Array.isArray(j.content.parts)) t = partsText(j.content.parts);\nelse if (typeof j.text === 'string') t = j.text;\nelse if (typeof j.content === 'string') t = j.content;\nelse if (Array.isArray(j.candidates) && j.candidates[0] && j.candidates[0].content) t = partsText(j.candidates[0].content.parts);\nt = String(t || '');\nlet parsed = {};\nconst a = t.indexOf('{');\nconst b = t.lastIndexOf('}');\nif (a !== -1 && b > a) { try { parsed = JSON.parse(t.slice(a, b + 1)); } catch (e) { parsed = {}; } }\nconst aiWorked = Object.keys(parsed).length > 0;\nconst aiAnswer = String(parsed.answer || '').trim();\nconst aiOk = aiAnswer.length > 0 && aiAnswer.indexOf('NO_ANSWER') === -1;\nconst urgent = /\\b(human|agent|urgent|refund|billing|complaint|hacked|security|chargeback|cancel)\\b/i.test(String(src.message_text || ''));\nconst kwHit = src.answered === true && String(src.answer || '').length > 0;\n// If Gemini failed, do not silently drop the email: fall back to keyword/urgent rules.\nconst isSupport = aiWorked ? (parsed.is_support === true || parsed.is_support === 'true') : (kwHit || urgent);\nconst out = Object.assign({}, src, {\n  is_support: isSupport,\n  urgent: urgent,\n  answered: kwHit ? true : aiOk,\n  answer: kwHit ? src.answer : (aiOk ? aiAnswer : '')\n});\ndelete out.ai_system;\ndelete out.ai_prompt;\ndelete out.faq_context;\nreturn { json: out };"
+      },
+      "id": "6e068dab-75c5-408c-9f1e-f2ce03a83b01",
+      "name": "Parse AI Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1610,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.is_support }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "69c21e3c-9e55-440d-84df-c4b03ed73856",
+      "name": "Is Support Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1840,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.urgent }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "be2da004-eaea-4ba5-aad3-cd92c189baec",
+      "name": "Urgent / Human Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2070,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "reason",
+              "value": "={{ $json.urgent ? 'Urgent keyword' : 'No reliable answer' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "79be834b-6510-4359-8f00-047d7e6a17bc",
+      "name": "Prepare Ticket",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2530,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1s2iSKENay0XrvxpFsRpSgehGNRO_xEVGKHi6dmHogx8"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket_id }}",
+            "created_at": "={{ $json.received_at }}",
+            "channel": "gmail",
+            "customer_id": "={{ $json.customer_email }}",
+            "customer_name": "={{ $json.customer_name }}",
+            "message": "={{ $json.message_text }}",
+            "reason": "={{ $json.reason }}",
+            "status": "open"
+          },
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "channel",
+              "displayName": "channel",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_id",
+              "displayName": "customer_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reason",
+              "displayName": "reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1632a35-cba6-4477-8fa2-6a710e1e7706",
+      "name": "Log Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2760,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Nt0QGFAe5D9ZXv6B",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "ayeshimra381@gmail.com",
+        "subject": "={{ '[Support Escalation ' + $('Prepare Ticket').item.json.ticket_id + '] ' + $('Prepare Ticket').item.json.subject }}",
+        "emailType": "text",
+        "message": "={{ 'Reason: ' + $('Prepare Ticket').item.json.reason + '\\nFrom: ' + $('Prepare Ticket').item.json.customer_name + ' <' + $('Prepare Ticket').item.json.customer_email + '>\\n\\n' + $('Prepare Ticket').item.json.message_text + '\\n\\nOpen thread: https://mail.google.com/mail/u/0/#inbox/' + $('Prepare Ticket').item.json.thread_id }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "4a0a42b5-2103-4459-99c0-326adc653786",
+      "name": "Notify Agent",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2990,
+        300
+      ],
+      "webhookId": "256f77a3-14c6-4fbc-bb6f-6db839e852af",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "oWDtSgMFtN8r9CHf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Prepare Ticket').item.json.message_id }}",
+        "emailType": "text",
+        "message": "={{ 'Hi ' + $('Prepare Ticket').item.json.customer_name + ',\\n\\nThanks for contacting us. Your request has been passed to our support team and a person will reply soon.\\n\\nTicket: ' + $('Prepare Ticket').item.json.ticket_id + '\\n\\nBest regards,\\nSupport Team' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "ad71fb9a-bed2-424b-bbf8-4f89d5056705",
+      "name": "Reply Holding",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3220,
+        300
+      ],
+      "webhookId": "03260f2f-6fe5-4662-b97e-002b385b083d",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "oWDtSgMFtN8r9CHf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $('Extract Fields').item.json.message_id }}"
+      },
+      "id": "7558183c-4ce7-444e-9424-0e7e81649b58",
+      "name": "Mark Read",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3450,
+        460
+      ],
+      "webhookId": "8a79d1b4-b146-44bc-ae9b-53b8e427b0fe",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "oWDtSgMFtN8r9CHf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.answered }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "936232de-258a-4111-b7e1-86e117fee6be",
+      "name": "Has Answer?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2300,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $json.message_id }}",
+        "emailType": "text",
+        "message": "={{ 'Hi ' + $json.customer_name + ',\\n\\n' + $json.answer + '\\n\\nIf you need anything else, just reply to this email.\\n\\nBest regards,\\nSupport Team' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "e09eb2b1-e8b7-4d9c-8921-a0d72d36e991",
+      "name": "Send Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2530,
+        620
+      ],
+      "webhookId": "ace8d798-22d4-4fc5-b584-df5aab87d617",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "oWDtSgMFtN8r9CHf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "5b762b3a-0cca-4280-bf03-2433eca9d33c",
+      "name": "How it works",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -80
+      ],
+      "parameters": {
+        "width": 760,
+        "height": 300,
+        "content": "## Gmail Support Bot\nGmail Trigger (unread inbox, every minute) -> load FAQs from Google Sheet -> skip automated senders -> FAQ keyword match -> Gemini decides if the email is a real support request and answers ONLY from the FAQ.\n\n- Answer found -> auto-reply in thread -> mark read\n- Urgent keyword / no reliable answer -> log ticket in Sheet -> notify agent -> holding reply with ticket ID -> mark read\n- Not a support email (personal/newsletter) -> left untouched and unread\n- If Gemini fails, keyword/urgent rules are used so no email is lost"
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get FAQs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get FAQs": {
+      "main": [
+        [
+          {
+            "node": "Extract Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Fields": {
+      "main": [
+        [
+          {
+            "node": "Ignore (Automated)?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ignore (Automated)?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "FAQ Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ Match": {
+      "main": [
+        [
+          {
+            "node": "Build AI Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Request": {
+      "main": [
+        [
+          {
+            "node": "Gemini AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini AI": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Answer": {
+      "main": [
+        [
+          {
+            "node": "Is Support Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Support Email?": {
+      "main": [
+        [
+          {
+            "node": "Urgent / Human Request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Urgent / Human Request?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Has Answer?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Ticket": {
+      "main": [
+        [
+          {
+            "node": "Log Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Ticket": {
+      "main": [
+        [
+          {
+            "node": "Notify Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Agent": {
+      "main": [
+        [
+          {
+            "node": "Reply Holding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Holding": {
+      "main": [
+        [
+          {
+            "node": "Mark Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Answer?": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reply": {
+      "main": [
+        [
+          {
+            "node": "Mark Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "6126287e-ab16-4eca-9d9c-1b18353aac65",
+  "meta": {
+    "instanceId": "3f872e1196cd5bba27becc1e2280fac5a544c6e2e24485343ea710eb3c4c5d37"
+  },
+  "nodeGroups": [
+    {
+      "id": "c9aa64ba-3303-45f3-9f32-e4177cec17a2",
+      "name": "Load new emails",
+      "nodeIds": [
+        "22774c5d-047c-4b68-a83d-80001ac71c9a",
+        "23239182-922e-4092-bbf2-86840df101a9",
+        "4341d484-032a-4093-b8cc-02f07ff75a66"
+      ],
+      "description": "Each minute: loads the FAQ sheet, cleans up every new unread email, and sets aside no-reply or automated senders"
+    },
+    {
+      "id": "a81d3749-490d-4b99-9fbc-ee7985326f05",
+      "name": "Understand the email",
+      "nodeIds": [
+        "0ff259ca-f3a0-4563-b9e2-c64e79702ca0",
+        "0eb102db-5009-46cb-bee4-6176c655113e",
+        "f4ff1a4c-14be-49b1-9085-e6733fe29c9e",
+        "6e068dab-75c5-408c-9f1e-f2ce03a83b01",
+        "69c21e3c-9e55-440d-84df-c4b03ed73856",
+        "be2da004-eaea-4ba5-aad3-cd92c189baec"
+      ],
+      "description": "Unrelated mail stops here untouched; support questions get an FAQ answer and an urgency check"
+    },
+    {
+      "id": "4e6ce275-a5b9-45d4-9b4c-618a848f06d3",
+      "name": "Escalate to a human",
+      "nodeIds": [
+        "79be834b-6510-4359-8f00-047d7e6a17bc",
+        "a1632a35-cba6-4477-8fa2-6a710e1e7706",
+        "4a0a42b5-2103-4459-99c0-326adc653786",
+        "ad71fb9a-bed2-424b-bbf8-4f89d5056705"
+      ],
+      "description": "Urgent or unanswered emails: logs a ticket in the sheet, alerts the support inbox, and replies in-thread with a ticket ID"
+    }
+  ],
+  "id": "ulkaFKdoT9ceReMu",
+  "tags": []
+}
